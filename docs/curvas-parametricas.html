@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Curvas Paramétricas — Bézier e Hermite</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm; }
+  * { box-sizing: border-box; }
+  html { font-size: 11pt; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1a1a1a; line-height: 1.5; margin: 0;
+  }
+  h1 { font-size: 22pt; margin: 0 0 2pt; color: #5a2d82; }
+  .subtitle { font-size: 12pt; color: #555; margin: 0 0 2pt; font-weight: 600; }
+  .meta { font-size: 10pt; color: #777; margin: 0 0 18pt; }
+  h2 {
+    font-size: 15pt; color: #5a2d82; margin: 22pt 0 6pt;
+    border-bottom: 1.5px solid #d9c7e8; padding-bottom: 3pt;
+  }
+  h3 { font-size: 12.5pt; color: #3a3a3a; margin: 14pt 0 4pt; }
+  p { margin: 6pt 0; }
+  blockquote {
+    margin: 10pt 0; padding: 8pt 12pt; background: #f4eef9;
+    border-left: 4px solid #9b6dc4; color: #3a2a4a; font-size: 10pt;
+  }
+  code {
+    font-family: "SF Mono", "Menlo", Consolas, monospace;
+    font-size: 9.5pt; background: #f0f0f3; padding: 1px 4px; border-radius: 3px;
+  }
+  pre {
+    background: #f6f6f9; border: 1px solid #e2e2ea; border-radius: 6px;
+    padding: 9pt 11pt; overflow-x: auto; font-size: 9pt; line-height: 1.4;
+    white-space: pre; page-break-inside: avoid;
+  }
+  pre code { background: none; padding: 0; font-size: 9pt; }
+  table { border-collapse: collapse; width: 100%; margin: 8pt 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #d7d2de; padding: 5pt 8pt; text-align: left; vertical-align: top; }
+  th { background: #efe7f6; color: #4a2d6a; }
+  tr:nth-child(even) td { background: #faf8fc; }
+  .eq {
+    margin: 10pt 0; padding: 6pt 0; text-align: center;
+    font-family: "Cambria Math", "STIX Two Math", Georgia, serif;
+    font-size: 12pt; page-break-inside: avoid;
+  }
+  var, .v { font-family: "Cambria Math", Georgia, serif; font-style: italic; }
+  .frac { display: inline-block; vertical-align: middle; text-align: center; margin: 0 2px; }
+  .frac > .num { display: block; border-bottom: 1px solid #1a1a1a; padding: 0 4px; }
+  .frac > .den { display: block; padding: 0 4px; }
+  h2, h3 { page-break-after: avoid; }
+  ol, ul { margin: 6pt 0; padding-left: 22pt; }
+  li { margin: 3pt 0; }
+  hr { border: none; border-top: 1px solid #e0dce6; margin: 16pt 0; }
+  .small { font-size: 9pt; color: #777; }
+</style>
+</head>
+<body>
+
+<h1>Curvas Paramétricas — Bézier e Hermite</h1>
+<p class="subtitle">Trabalho Prático 02 — Computação Gráfica</p>
+<p class="meta">Autor: Lucas Gualtieri · 2026</p>
+
+<blockquote>
+Documentação técnica do TP 02. Estende o TP 01 (matriz de pixels com retas,
+circunferência, recorte e transformações 2D) com <strong>duas curvas
+paramétricas vistas em sala</strong>: a curva de <strong>Bézier</strong>
+(avaliada pelo algoritmo de <strong>De Casteljau</strong>) e a curva de
+<strong>Hermite cúbica</strong>.
+</blockquote>
+
+<h2>1. Organização do código</h2>
+
+<p>O projeto é uma aplicação web (Vite + TypeScript) que rasteriza primitivas
+diretamente sobre um <em>buffer</em> de pixels do <code>&lt;canvas&gt;</code>. O
+código é dividido em módulos com responsabilidades bem separadas (todos em
+<code>src/</code>):</p>
+
+<table>
+<tr><th>Módulo</th><th>Responsabilidade</th></tr>
+<tr><td><code>types.ts</code></td><td>Tipos compartilhados: <code>Point</code>, <code>VectorIJ</code>, <code>Color</code>, <code>Rect</code>, <code>Tool</code>, <code>UIState</code>.</td></tr>
+<tr><td><code>Algorithms.ts</code></td><td><strong>Algoritmos puros</strong> de rasterização e geometria — recebem um <code>PixelWriter</code> <code>(x, y, color) =&gt; void</code> e não conhecem o canvas. É aqui que vivem as curvas.</td></tr>
+<tr><td><code>Homogeneous2D.ts</code></td><td>Matrizes homogêneas 3×3 (rotação, escala, translação) e suas operações.</td></tr>
+<tr><td><code>CanvasManager.ts</code></td><td>Dono do <em>buffer</em> de pixels: <code>setPixel</code>, limpeza, grade e a conversão tela → coordenadas lógicas (<em>picking</em>).</td></tr>
+<tr><td><code>InputHandler.ts</code></td><td>Traduz eventos de mouse/toque em coordenadas de pixel do canvas.</td></tr>
+<tr><td><code>UIManager.ts</code></td><td>Constrói a barra lateral, emite o <code>UIState</code> e dispara callbacks (<code>onFinishCurve</code>, <code>onClear</code>).</td></tr>
+<tr><td><code>main.ts</code></td><td><strong>Orquestrador.</strong> Mantém a lista de primitivas, o fluxo de cliques, o <em>pipeline</em> de transformação e o laço de redesenho.</td></tr>
+</table>
+
+<h3>1.1. Fluxo entrada → transformação → rasterização</h3>
+
+<pre><code>clique (InputHandler)
+   → coordenada de pixel do canvas
+   → CanvasManager.canvasPixelToLogical  (inverte R·S e tira a translação)
+   → main.ts: acumula pontos de controle (curveControlPoints)
+   → finishCurve(): vira uma Primitive { type:"curve", kind, controlPoints }
+   ─────────────────────────────────────────────────────────────────────
+   a cada quadro, redrawScene():
+   → transformPoints(): p_screen = R·S·(p + t)      (Homogeneous2D)
+   → Algorithms.drawBezier / drawHermite            (amostra e rasteriza)
+   → CanvasManager.setPixel                         (escreve no buffer)</code></pre>
+
+<p>As curvas reutilizam a infraestrutura do TP 01: a curva é <strong>amostrada</strong>
+em <code>segments + 1</code> pontos e os pontos consecutivos são ligados por
+<code>drawLineBresenham</code> (a mesma rasterização de retas do trabalho anterior).</p>
+
+<h3>1.2. Onde cada curva foi implementada</h3>
+<ul>
+  <li><strong><code>src/Algorithms.ts</code></strong> — núcleo matemático (puro, testável, sem UI):
+    <code>lerp</code>, <code>deCasteljau</code>, <code>evalHermite</code>,
+    <code>sampleBezier</code>/<code>sampleHermite</code>,
+    <code>drawBezier</code>/<code>drawHermite</code>/<code>drawPolyline</code>.</li>
+  <li><strong><code>src/main.ts</code></strong> — coleta de pontos de controle
+    (<code>curveControlPoints</code>), <code>finishCurve()</code> e
+    <code>drawCurve()</code> (transforma os pontos e desenha curva + polígono/alças + marcadores).</li>
+  <li><strong><code>src/UIManager.ts</code></strong> — botões <em>Bézier</em>/<em>Hermite</em>,
+    <em>slider</em> <code>segments</code> e botão <em>Finalizar curva</em>.</li>
+  <li><strong><code>src/types.ts</code></strong> — <code>Tool</code> ganha
+    <code>"bezier"</code>/<code>"hermite"</code>; <code>UIState</code> ganha <code>curveSegments</code>.</li>
+</ul>
+
+<h2>2. Modelo matemático</h2>
+
+<p>Uma <strong>curva paramétrica</strong> é uma função <span class="v">P</span>(<span class="v">t</span>)
+que mapeia um parâmetro escalar <span class="v">t</span> ∈ [0, 1] num ponto do
+plano. Em vez de descrever <span class="v">y</span> em função de <span class="v">x</span>
+(o que impede curvas verticais ou laços), descrevemos <span class="v">x</span> e
+<span class="v">y</span> <strong>separadamente</strong> em função de
+<span class="v">t</span>. Tanto Bézier quanto Hermite são curvas
+<strong>polinomiais</strong>: cada coordenada é um polinômio em <span class="v">t</span>.</p>
+
+<h3>2.1. Curva de Bézier — algoritmo de De Casteljau</h3>
+
+<p>Dados <span class="v">n</span>+1 <strong>pontos de controle</strong>
+<span class="v">P</span><sub>0</sub>, <span class="v">P</span><sub>1</sub>, …,
+<span class="v">P</span><sub><span class="v">n</span></sub>, a curva de Bézier de
+grau <span class="v">n</span> é</p>
+
+<div class="eq">
+B(<span class="v">t</span>) =
+<span style="font-size:16pt;">∑</span><sub><span class="v">i</span>=0</sub><sup><span class="v">n</span></sup>
+<span class="frac"><span class="num"><span class="v">n</span>!</span><span class="den"><span class="v">i</span>!&thinsp;(<span class="v">n</span>−<span class="v">i</span>)!</span></span>
+(1−<span class="v">t</span>)<sup><span class="v">n</span>−<span class="v">i</span></sup>
+<span class="v">t</span><sup><span class="v">i</span></sup>
+<span class="v">P</span><sub><span class="v">i</span></sub>,
+&nbsp;&nbsp; <span class="v">t</span> ∈ [0, 1].
+</div>
+
+<p>Os coeficientes
+<span class="v">b</span><sub><span class="v">i</span>,<span class="v">n</span></sub>(<span class="v">t</span>)
+são os <strong>polinômios de Bernstein</strong>. Em vez de avaliá-los
+diretamente, usamos o <strong>algoritmo de De Casteljau</strong>, numericamente
+mais estável e geometricamente intuitivo: ele é uma sequência de
+<strong>interpolações lineares</strong>.</p>
+
+<p>Definimos
+<span class="v">P</span><sub><span class="v">i</span></sub><sup>(0)</sup> =
+<span class="v">P</span><sub><span class="v">i</span></sub> e iteramos:</p>
+
+<div class="eq">
+<span class="v">P</span><sub><span class="v">i</span></sub><sup>(<span class="v">k</span>)</sup> =
+(1−<span class="v">t</span>)&thinsp;<span class="v">P</span><sub><span class="v">i</span></sub><sup>(<span class="v">k</span>−1)</sup> +
+<span class="v">t</span>&thinsp;<span class="v">P</span><sub><span class="v">i</span>+1</sub><sup>(<span class="v">k</span>−1)</sup>,
+&nbsp;&nbsp; <span class="v">k</span> = 1…<span class="v">n</span>, &nbsp;
+<span class="v">i</span> = 0…<span class="v">n</span>−<span class="v">k</span>.
+</div>
+
+<p>Após <span class="v">n</span> níveis resta um único ponto
+<span class="v">P</span><sub>0</sub><sup>(<span class="v">n</span>)</sup> =
+B(<span class="v">t</span>). Esquema para <span class="v">n</span> = 3:</p>
+
+<pre><code>P0   P1   P2   P3        (nível 0 — pontos de controle)
+  Q0   Q1   Q2           Qi = lerp(Pi, Pi+1, t)
+    R0   R1              Ri = lerp(Qi, Qi+1, t)
+      S0                 S0 = lerp(R0, R1, t) = B(t)</code></pre>
+
+<p><strong>Implementação</strong> (<code>deCasteljau</code> em
+<code>Algorithms.ts</code>): copiamos os pontos de controle para um vetor mutável
+e, a cada nível, substituímos cada posição pela interpolação dela com a vizinha,
+encurtando o vetor em 1 até sobrar um ponto.</p>
+
+<p><strong>Propriedades relevantes:</strong></p>
+<ul>
+  <li><strong>Interpolação dos extremos:</strong> B(0) = <span class="v">P</span><sub>0</sub>
+      e B(1) = <span class="v">P</span><sub><span class="v">n</span></sub> — a curva
+      passa pelo primeiro e pelo último ponto de controle, mas apenas
+      <em>aproxima</em> os intermediários.</li>
+  <li><strong>Fecho convexo:</strong> a curva fica contida no fecho convexo dos pontos de controle.</li>
+  <li><strong>Invariância afim:</strong> aplicar uma transformação afim
+      <span class="v">M</span> aos pontos de controle e depois avaliar dá o mesmo
+      resultado que avaliar e depois transformar. <strong>Isso é o que nos
+      permite transformar apenas os poucos pontos de controle</strong> e só então
+      amostrar a curva — exatamente o que <code>drawCurve</code> faz em
+      <code>main.ts</code>.</li>
+</ul>
+
+<h3>2.2. Curva de Hermite cúbica</h3>
+
+<p>A curva de Hermite é definida por <strong>dois pontos</strong>
+<span class="v">P</span><sub>0</sub>, <span class="v">P</span><sub>1</sub> e
+<strong>duas tangentes</strong> (vetores velocidade)
+<span class="v">T</span><sub>0</sub>, <span class="v">T</span><sub>1</sub> nesses
+pontos. A forma cúbica é</p>
+
+<div class="eq">
+P(<span class="v">t</span>) =
+H<sub>00</sub>(<span class="v">t</span>)&thinsp;<span class="v">P</span><sub>0</sub> +
+H<sub>10</sub>(<span class="v">t</span>)&thinsp;<span class="v">T</span><sub>0</sub> +
+H<sub>01</sub>(<span class="v">t</span>)&thinsp;<span class="v">P</span><sub>1</sub> +
+H<sub>11</sub>(<span class="v">t</span>)&thinsp;<span class="v">T</span><sub>1</sub>,
+</div>
+
+<p>com os <strong>polinômios de base de Hermite</strong>:</p>
+
+<div class="eq">
+H<sub>00</sub>(<span class="v">t</span>) = 2<span class="v">t</span><sup>3</sup> − 3<span class="v">t</span><sup>2</sup> + 1 &nbsp;&nbsp;&nbsp;
+H<sub>10</sub>(<span class="v">t</span>) = <span class="v">t</span><sup>3</sup> − 2<span class="v">t</span><sup>2</sup> + <span class="v">t</span><br/>
+H<sub>01</sub>(<span class="v">t</span>) = −2<span class="v">t</span><sup>3</sup> + 3<span class="v">t</span><sup>2</sup> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+H<sub>11</sub>(<span class="v">t</span>) = <span class="v">t</span><sup>3</sup> − <span class="v">t</span><sup>2</sup>
+</div>
+
+<p>Eles são construídos para satisfazer as <strong>condições de contorno</strong>:</p>
+
+<div class="eq">
+P(0) = <span class="v">P</span><sub>0</sub>, &nbsp;&nbsp;
+P(1) = <span class="v">P</span><sub>1</sub>, &nbsp;&nbsp;
+P′(0) = <span class="v">T</span><sub>0</sub>, &nbsp;&nbsp;
+P′(1) = <span class="v">T</span><sub>1</sub>.
+</div>
+
+<p>Ou seja, a curva <strong>interpola</strong> os dois pontos e sai/chega com as
+tangentes prescritas — útil quando se quer controlar a direção e a "força" da
+curva nas pontas.</p>
+
+<p><strong>Entrada por alças.</strong> Tangentes são difíceis de clicar
+diretamente, então a interface usa <strong>alças</strong>: o usuário clica o
+ponto <span class="v">P</span><sub>0</sub> e depois uma alça
+<span class="v">H</span><sub>0</sub>; a tangente é a diferença
+<span class="v">T</span><sub>0</sub> = <span class="v">H</span><sub>0</sub> −
+<span class="v">P</span><sub>0</sub> (idem para
+<span class="v">P</span><sub>1</sub>, <span class="v">H</span><sub>1</sub>).
+Internamente a primitiva guarda os quatro pontos
+[<span class="v">P</span><sub>0</sub>, <span class="v">H</span><sub>0</sub>,
+<span class="v">P</span><sub>1</sub>, <span class="v">H</span><sub>1</sub>].</p>
+
+<p><strong>Tangentes sob transformação.</strong> Pontos são posições
+(transformam como <span class="v">A</span>&thinsp;<span class="v">p</span> +
+<span class="v">b</span>), mas tangentes são <em>vetores</em> (transformam só pela
+parte linear, <span class="v">A</span>&thinsp;<span class="v">v</span>, sem a
+translação). Guardando a alça como <strong>posição</strong> e calculando a
+tangente como diferença <strong>depois</strong> de transformar, obtemos
+automaticamente o comportamento correto:</p>
+
+<div class="eq">
+<span class="v">T</span><sub>0</sub>′ =
+<span class="v">H</span><sub>0</sub>′ − <span class="v">P</span><sub>0</sub>′ =
+(<span class="v">A</span><span class="v">H</span><sub>0</sub> + <span class="v">b</span>) −
+(<span class="v">A</span><span class="v">P</span><sub>0</sub> + <span class="v">b</span>) =
+<span class="v">A</span>&thinsp;(<span class="v">H</span><sub>0</sub> − <span class="v">P</span><sub>0</sub>) =
+<span class="v">A</span>&thinsp;<span class="v">T</span><sub>0</sub>.
+</div>
+
+<p>Por isso <code>drawCurve</code> transforma os quatro pontos como posições e só
+então recalcula as tangentes.</p>
+
+<h3>2.3. Amostragem e rasterização</h3>
+
+<p>Ambas as curvas são contínuas, mas a tela é discreta. Avaliamos a curva em
+<span class="v">t</span><sub><span class="v">k</span></sub> =
+<span class="v">k</span>/<span class="v">N</span> para
+<span class="v">k</span> = 0, 1, …, <span class="v">N</span> (onde
+<span class="v">N</span> = <code>segments</code>), obtendo
+<span class="v">N</span>+1 pontos, e ligamos pontos consecutivos com
+<strong>Bresenham</strong>. Quanto maior <span class="v">N</span>, mais fina a
+aproximação (refinamento controlado pelo <em>slider</em> <code>segments</code>).</p>
+
+<h2>3. Manual de uso</h2>
+
+<h3>3.1. Executando</h3>
+<pre><code>npm install     # instala dependências
+npm run dev     # inicia o servidor de desenvolvimento (abra a URL exibida)
+npm run build   # checagem de tipos + build de produção</code></pre>
+
+<blockquote>
+<strong>macOS:</strong> se o build acusar <em>"library load disallowed by system
+policy"</em> no <code>lightningcss</code>, remova a quarentena do binário nativo:
+<code>xattr -dr com.apple.quarantine node_modules/lightningcss-darwin-arm64/</code>.
+</blockquote>
+
+<h3>3.2. Desenhando uma curva de Bézier</h3>
+<ol>
+  <li>Na barra lateral, em <strong>Tool Selector</strong>, clique em <strong>Bézier</strong>.</li>
+  <li>Clique no canvas para adicionar <strong>pontos de controle</strong> (quantos
+      quiser, ≥ 2). O polígono de controle (linhas cinza) e os marcadores aparecem
+      em tempo real.</li>
+  <li>Clique em <strong>Finalizar curva</strong> (painel <em>Curvas Paramétricas</em>) para confirmar.</li>
+  <li>Ajuste o <em>slider</em> <strong>segments</strong> para refinar/suavizar a curva.</li>
+</ol>
+
+<h3>3.3. Desenhando uma curva de Hermite</h3>
+<ol>
+  <li>Selecione a ferramenta <strong>Hermite</strong>.</li>
+  <li>Dê <strong>4 cliques</strong> nesta ordem:
+    <ol>
+      <li><strong>P0</strong> — ponto inicial;</li>
+      <li><strong>alça de P0</strong> — define a tangente <span class="v">T</span><sub>0</sub> (direção/força de saída);</li>
+      <li><strong>P1</strong> — ponto final;</li>
+      <li><strong>alça de P1</strong> — define a tangente <span class="v">T</span><sub>1</sub> (direção/força de chegada).</li>
+    </ol>
+  </li>
+  <li>A curva é finalizada <strong>automaticamente</strong> no 4º clique. As alças
+      aparecem como linhas-guia ligando cada ponto à sua alça.</li>
+</ol>
+
+<h3>3.4. Transformações e demais controles</h3>
+<ul>
+  <li><strong>dx, dy, angle, sx, sy</strong> (painel <em>Transformations</em>)
+      aplicam translação, rotação e escala a <strong>toda</strong> a cena — as
+      curvas acompanham (invariância afim).</li>
+  <li><strong>pixel size</strong> amplia os blocos lógicos; <strong>Grid</strong> mostra eixos e origem.</li>
+  <li><strong>Clear Matrix</strong> limpa tudo, inclusive uma curva em construção.</li>
+  <li>Trocar de ferramenta <strong>descarta</strong> a curva ainda não finalizada.</li>
+</ul>
+
+<h3>3.5. Legenda de cores</h3>
+<table>
+<tr><th>Cor</th><th>Significado</th></tr>
+<tr><td>Magenta/roxo</td><td>a curva paramétrica rasterizada</td></tr>
+<tr><td>Cinza</td><td>polígono de controle (Bézier) / alças de tangente (Hermite)</td></tr>
+<tr><td>Amarelo</td><td>pontos de controle de uma curva já finalizada</td></tr>
+<tr><td>Branco</td><td>marcadores da curva em construção</td></tr>
+</table>
+
+<h2>4. Referências e autoria</h2>
+
+<p>Os algoritmos foram implementados pelo autor com base nas seguintes referências:</p>
+<ol>
+  <li><strong>P. de Casteljau</strong> (1959/1963), Citroën — algoritmo de
+      subdivisão recursiva por interpolação linear para curvas de Bézier.</li>
+  <li><strong>P. Bézier</strong> — curvas de Bézier e a base de Bernstein.</li>
+  <li><strong>Foley, J. D.; van Dam, A.; Feiner, S. K.; Hughes, J. F.</strong> —
+      <em>Computer Graphics: Principles and Practice</em>. Addison-Wesley. (Bases
+      de Bézier/Bernstein e de Hermite; matriz de Hermite e condições de contorno.)</li>
+  <li><strong>Hearn, D.; Baker, M. P.</strong> — <em>Computer Graphics with
+      OpenGL</em>. (Amostragem e rasterização de curvas paramétricas.)</li>
+  <li>Notas de aula da disciplina de Computação Gráfica, módulo
+      <em>Curvas Paramétricas</em>.</li>
+</ol>
+
+<p class="small">A rasterização de segmentos (Bresenham), as transformações
+homogêneas e a infraestrutura de canvas reaproveitam o código do <strong>TP
+01</strong> deste mesmo projeto.</p>
+
+</body>
+</html>
